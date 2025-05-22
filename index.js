@@ -1,4 +1,4 @@
-// Arquivo principal do bot
+// Arquivo principal do bot (index.js ou similar)
 const { 
   Client, 
   GatewayIntentBits, 
@@ -9,14 +9,14 @@ const {
   ButtonBuilder, 
   ButtonStyle, 
   AttachmentBuilder, 
-  MessageFlags 
+  MessageFlags,
+  REST,
+  Routes
 } = require('discord.js');
-const { REST } = require('@discordjs/rest');
-const { Routes } = require('discord-api-types/v10');
 const fs = require('fs');
 const path = require('path');
 const { JsonDatabase } = require('wio.db');
-const config = require('./config/config');
+const config = require('./config/config.js');
 const { initializeUser, getUserLanguage, getText } = require('./utils/languageManager');
 const { getUserContainers } = require('./utils/userManager');
 
@@ -36,7 +36,7 @@ const client = new Client({
 // Coleções para armazenar comandos e eventos
 client.commands = new Collection();
 client.db = db;
-client.config = config;
+client.config = config; // Garante que a configuração está no objeto client
 
 // Função para obter texto traduzido
 client.getText = function(userId, key, replacements = {}) {
@@ -59,6 +59,35 @@ for (const file of commandFiles) {
   }
 }
 
+// --- NOVO: Função para registrar comandos slash ---
+async function registerSlashCommands() {
+  try {
+    console.log('Iniciando registro de comandos slash...');
+      
+    const commands = [];
+    // Percorre todos os comandos carregados na coleção do client
+    for (const command of client.commands.values()) {
+      if ('data' in command) {
+        commands.push(command.data.toJSON());
+      } else {
+        console.log(`[AVISO] O comando "${command.name}" não tem a propriedade "data" necessária para registro de slash command.`);
+      }
+    }
+      
+    const rest = new REST({ version: '10' }).setToken(config.token); // Usa config.token diretamente
+      
+    await rest.put(
+      Routes.applicationCommands(client.config.clientId),
+      { body: commands }
+    );
+      
+    console.log(`${commands.length} comandos slash registrados com sucesso!`);
+  } catch (error) {
+    console.error('Erro ao registrar comandos slash:', error);
+  }
+}
+// --- FIM DA FUNÇÃO DE REGISTRO ---
+
 // Carregar eventos
 const eventsPath = path.join(__dirname, 'events');
 const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
@@ -68,9 +97,9 @@ for (const file of eventFiles) {
   const event = require(filePath);
   
   if (event.once) {
-    client.once(event.name, (...args) => event.execute(...args));
+    client.once(event.name, (...args) => event.execute(...args, client)); // Passa o client
   } else {
-    client.on(event.name, (...args) => event.execute(...args));
+    client.on(event.name, (...args) => event.execute(...args, client)); // Passa o client
   }
   
   console.log(`Evento carregado: ${event.name}`);
@@ -78,11 +107,13 @@ for (const file of eventFiles) {
 
 // Inicializar usuário antes de qualquer interação
 client.on('interactionCreate', async (interaction) => {
-  // Inicializar usuário no banco de dados se não existir
   if (interaction.user && interaction.user.id) {
     initializeUser(db, interaction.user.id, config.defaultLanguage);
   }
 });
 
-// Login do bot
-client.login(config.token);
+// Chamar a função de registro de comandos antes do login do bot
+(async () => {
+  await registerSlashCommands();
+  client.login(config.token);
+})(); // Função auto-executável para esperar o registro dos comandos
