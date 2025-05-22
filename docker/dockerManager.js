@@ -5,6 +5,7 @@ const exec = promisify(require('child_process').exec);
 const fs = require('fs');
 const path = require('path');
 const si = require('systeminformation');
+const AdmZip = require('adm-zip');
 
 // Inicializa o cliente Docker
 const docker = new Docker();
@@ -64,9 +65,10 @@ async function deleteContainer(containerId) {
     const container = docker.getContainer(containerId);
     
     // Verificar se o container está rodando e pará-lo se necessário
-    const data = await container.inspect();
-    if (data.State.Running) {
+    try {
       await container.stop();
+    } catch (e) {
+      console.warn(`Could not stop container ${containerId}: ${e.message}`);
     }
     
     return await container.remove();
@@ -85,18 +87,18 @@ async function getContainerInfo(containerId) {
   try {
     const container = docker.getContainer(containerId);
     const stats = await container.stats({ stream: false });
+    const inspectData = await container.inspect();
     
-    // Calcular uso de CPU
+    // Cálculo de uso de CPU
     const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
-    const systemCpuDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
-    const cpuCount = stats.cpu_stats.online_cpus;
-    const cpuUsage = (cpuDelta / systemCpuDelta) * cpuCount * 100;
+    const systemDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
+    const cpuUsage = (cpuDelta / systemDelta) * stats.cpu_stats.online_cpus * 100.0;
     
-    // Calcular uso de memória
-    const memoryUsage = stats.memory_stats.usage / (1024 * 1024); // Converter para MB
-    const memoryLimit = stats.memory_stats.limit / (1024 * 1024); // Converter para MB
+    // Uso de memória
+    const memoryUsage = stats.memory_stats.usage / (1024 * 1024);
+    const memoryLimit = stats.memory_stats.limit / (1024 * 1024);
     
-    // Obter uso de disco
+    // Uso de disco
     const diskUsage = await getDiskUsage(containerId);
     
     return {
@@ -107,7 +109,9 @@ async function getContainerInfo(containerId) {
       },
       disk: {
         used: diskUsage.toFixed(2)
-      }
+      },
+      status: inspectData.State.Status,
+      uptime: inspectData.State.StartedAt
     };
   } catch (error) {
     console.error(`Erro ao obter informações do container ${containerId}:`, error);
@@ -119,7 +123,9 @@ async function getContainerInfo(containerId) {
       },
       disk: {
         used: '0'
-      }
+      },
+      status: 'unknown',
+      uptime: null
     };
   }
 }
@@ -196,67 +202,42 @@ async function getSystemInfo() {
  * @returns {Promise<string>} - Promise com o caminho do arquivo de backup
  */
 async function createBackup(containerId, containerData) {
-  // Diretório temporário para o backup
-  const backupDir = path.join(__dirname, '..', 'temp', 'backups');
-  fs.mkdirSync(backupDir, { recursive: true });
-  
-  const backupPath = path.join(backupDir, `backup_${containerId}_${Date.now()}.zip`);
-  
-  // Copiar arquivos do container para um diretório temporário local
-  const tempDir = path.join(backupDir, containerId);
-  fs.mkdirSync(tempDir, { recursive: true });
-  
   try {
-    // Usar docker cp para copiar os arquivos do container
-    await exec(`docker cp ${containerId}:/app/. ${tempDir}`);
-    
-    // Criar um arquivo zip dos arquivos
-    const AdmZip = require('adm-zip');
+    const extractPath = path.join(__dirname, '..', 'containers', containerData.userId, containerData.botId);
+    const zipPath = path.join(__dirname, '..', 'temp', `backup_${containerId}.zip`);
+
+    fs.mkdirSync(path.join(__dirname, '..', 'temp'), { recursive: true });
+
     const zip = new AdmZip();
-    
-    // Adicionar todos os arquivos do tempDir para o zip
-    const files = getAllFiles(tempDir);
-    for (const file of files) {
-      const relativePath = path.relative(tempDir, file);
-      zip.addLocalFile(file, path.dirname(relativePath));
-    }
-    
-    // Escrever o arquivo zip
-    zip.writeZip(backupPath);
-    
-    // Limpar o diretório temporário
-    fs.rmSync(tempDir, { recursive: true, force: true });
-    
-    return backupPath;
+    zip.addLocalFolder(extractPath);
+    zip.writeZip(zipPath);
+
+    return zipPath;
   } catch (error) {
     console.error(`Erro ao criar backup do container ${containerId}:`, error);
-    // Limpar o diretório temporário em caso de erro
-    if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
     throw error;
   }
 }
 
 /**
- * Obtém todos os arquivos em um diretório, incluindo subdiretórios
- * @param {string} dirPath - Caminho do diretório
- * @param {Array} arrayOfFiles - Array para armazenar os arquivos
- * @returns {Array} - Array com os caminhos dos arquivos
+ * Formata o tempo de uptime
+ * @param {string} uptimeDate - Data de início do container
+ * @returns {string} - Uptime formatado
  */
-function getAllFiles(dirPath, arrayOfFiles = []) {
-  const files = fs.readdirSync(dirPath);
+function formatUptime(uptimeDate) {
+  if (!uptimeDate) return 'N/A';
   
-  files.forEach(file => {
-    const filePath = path.join(dirPath, file);
-    if (fs.statSync(filePath).isDirectory()) {
-      arrayOfFiles = getAllFiles(filePath, arrayOfFiles);
-    } else {
-      arrayOfFiles.push(filePath);
-    }
-  });
-  
-  return arrayOfFiles;
+  const startTime = new Date(uptimeDate);
+  const now = new Date();
+  const uptimeMs = now - startTime;
+  const totalSeconds = Math.floor(uptimeMs / 1000);
+  const days = Math.floor(totalSeconds / (3600 * 24));
+  const hours = Math.floor((totalSeconds % (3600 * 24)) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return (days > 0 ? `${days}d ` : '') +
+         `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 module.exports = {
@@ -269,6 +250,6 @@ module.exports = {
   checkDockerStatus,
   getSystemInfo,
   createBackup,
-  getAllFiles,
+  formatUptime,
   docker
 };

@@ -1,13 +1,144 @@
-// Evento para interações (botões, select menus, etc.)
-const { Events, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { startContainer, stopContainer, restartContainer, deleteContainer, createBackup } = require('../docker/dockerManager');
+// Evento para interações (comandos, botões, select menus, etc.)
+const { Events, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, MessageFlags, AttachmentBuilder } = require('discord.js');
+const { initializeUser } = require('../utils/languageManager');
+const { getUserContainers, getContainer, updateContainer, removeContainer, fetchBotInfo } = require('../utils/userManager');
+const { getContainerInfo, startContainer, stopContainer, restartContainer, deleteContainer, createBackup, formatUptime } = require('../docker/dockerManager');
 const { promisify } = require('util');
 const exec = promisify(require('child_process').exec);
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const AdmZip = require('adm-zip');
-const { refreshBotPanel } = require('../commands/app');
+
+/**
+ * Atualiza o painel de informações do bot.
+ * @param {import('discord.js').Interaction | import('discord.js').Message} target A interação ou mensagem a ser editada.
+ * @param {string} userId O ID do usuário.
+ * @param {string} containerId O ID do contêiner.
+ */
+async function refreshBotPanel(target, userId, containerId, client) {
+  const db = client.db;
+  const container = getContainer(db, userId, containerId);
+  const isInteraction = typeof target.deferReply === 'function';
+
+  if (!container) {
+    const embed = new EmbedBuilder()
+      .setTitle('Bot Não Encontrado')
+      .setDescription('O container selecionado não foi encontrado ou foi excluído.')
+      .setColor('#ff0000');
+    try {
+      if (isInteraction) {
+        await target.editReply({ embeds: [embed], components: [] });
+      } else {
+        await target.edit({ embeds: [embed], components: [] });
+      }
+    } catch (e) {
+      console.error(`Erro ao editar painel para container ${containerId}:`, e.message);
+    }
+    return;
+  }
+
+  try {
+    const containerInfo = await getContainerInfo(containerId);
+    let uptimeFormatted = 'N/A';
+    if (containerInfo.uptime && containerInfo.status === 'running') {
+      uptimeFormatted = formatUptime(containerInfo.uptime);
+    }
+
+    const botInfo = await fetchBotInfo(client, container.botId);
+
+    const embed = new EmbedBuilder()
+      .setTitle(client.getText(userId, 'panel_title', { botName: botInfo.username }))
+      .setDescription(client.getText(userId, 'panel_description', { containerId: containerId }))
+      .setThumbnail(botInfo.avatarURL)
+      .addFields(
+        { name: client.getText(userId, 'panel_status'), value: `\`${containerInfo.status.toUpperCase()}\``, inline: true },
+        { name: client.getText(userId, 'panel_language'), value: `\`${container.language}\``, inline: true },
+        { name: client.getText(userId, 'panel_main_file'), value: `\`${container.mainFile}\``, inline: true },
+        { name: client.getText(userId, 'panel_uptime'), value: `\`${uptimeFormatted}\``, inline: true },
+        { name: client.getText(userId, 'panel_cpu_usage'), value: `\`${containerInfo.cpu}%\``, inline: true },
+        { name: client.getText(userId, 'panel_ram_usage'), value: `\`${containerInfo.memory.used}MB / ${container.ram}MB\``, inline: true },
+        { name: client.getText(userId, 'panel_disk_usage'), value: `\`${containerInfo.disk.used}MB\``, inline: true },
+        { name: client.getText(userId, 'panel_created_at'), value: `<t:${Math.floor(new Date(container.createdAt).getTime() / 1000)}:f>`, inline: true }
+      )
+      .setColor(containerInfo.status === 'running' ? '#57F287' : '#ED4245')
+      .setFooter({ text: client.getText(userId, 'panel_last_update', { time: new Date().toLocaleString() }) })
+      .setTimestamp();
+
+    // Linha 1 - Botões básicos
+    const row1 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`start_${userId}_${containerId}`)
+        .setLabel(client.getText(userId, 'btn_start'))
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(containerInfo.status === 'running'),
+      new ButtonBuilder()
+        .setCustomId(`stop_${userId}_${containerId}`)
+        .setLabel(client.getText(userId, 'btn_stop'))
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(containerInfo.status !== 'running'),
+      new ButtonBuilder()
+        .setCustomId(`restart_${userId}_${containerId}`)
+        .setLabel(client.getText(userId, 'btn_restart'))
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(containerInfo.status !== 'running'),
+      new ButtonBuilder()
+        .setCustomId(`delete_${userId}_${containerId}`)
+        .setLabel(client.getText(userId, 'btn_delete'))
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🗑️'),
+      new ButtonBuilder()
+        .setCustomId(`refresh_${userId}_${containerId}`)
+        .setEmoji('🔄')
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+    // Linha 2 - Botões avançados
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`commit_${userId}_${containerId}`)
+        .setLabel(client.getText(userId, 'btn_upload'))
+        .setEmoji('📤')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`resetmemory_${userId}_${containerId}`)
+        .setLabel(client.getText(userId, 'btn_change_ram'))
+        .setEmoji('💾')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(`terminal_${userId}_${containerId}`)
+        .setLabel(client.getText(userId, 'btn_logs'))
+        .setEmoji('📄')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`backup_${userId}_${containerId}`)
+        .setLabel(client.getText(userId, 'btn_backup'))
+        .setEmoji('📦')
+        .setStyle(ButtonStyle.Success)
+    );
+
+    if (isInteraction) {
+      await target.editReply({ embeds: [embed], components: [row1, row2] });
+    } else {
+      await target.edit({ embeds: [embed], components: [row1, row2] });
+    }
+  } catch (error) {
+    console.error(`Erro ao atualizar o painel do container ${containerId}:`, error);
+    const errorEmbed = new EmbedBuilder()
+      .setTitle('Erro ao Carregar Painel')
+      .setDescription(`Ocorreu um erro ao obter informações do seu bot.\n\`\`\`${error.message}\`\`\``)
+      .setColor('#ff0000');
+    try {
+      if (isInteraction) {
+        await target.editReply({ embeds: [errorEmbed], components: [] });
+      } else {
+        await target.edit({ embeds: [errorEmbed], components: [] });
+      }
+    } catch (e) {
+      console.error(`Erro crítico ao renderizar o painel (${containerId}):`, e.message);
+    }
+  }
+}
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -15,272 +146,352 @@ module.exports = {
   async execute(interaction) {
     const { client } = interaction;
     
-    // Ignorar interações que não são de botões ou select menus
-    if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
+    // Inicializar usuário no banco de dados se não existir
+    if (interaction.user && interaction.user.id) {
+      initializeUser(client.db, interaction.user.id, client.config.defaultLanguage);
+    }
     
-    // Processar select menu para selecionar bot
-    if (interaction.isStringSelectMenu() && interaction.customId === 'select_bot') {
-      const userId = interaction.user.id;
-      const containerId = interaction.values[0];
+    // Comandos Slash
+    if (interaction.isChatInputCommand()) {
+      const command = client.commands.get(interaction.commandName);
       
-      await interaction.deferUpdate();
-      await refreshBotPanel(interaction, userId, containerId);
+      if (!command) {
+        console.error(`Comando não encontrado: ${interaction.commandName}`);
+        return;
+      }
+      
+      try {
+        await command.execute(interaction);
+      } catch (error) {
+        console.error(`Erro ao executar comando ${interaction.commandName}:`, error);
+        
+        const errorReply = {
+          content: `Ocorreu um erro ao executar este comando: \`${error.message}\``,
+          ephemeral: true
+        };
+        
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp(errorReply);
+        } else {
+          await interaction.reply(errorReply);
+        }
+      }
+      
       return;
     }
     
-    // Processar select menu para selecionar idioma
-    if (interaction.isStringSelectMenu() && interaction.customId === 'select_language') {
-      const userId = interaction.user.id;
-      const language = interaction.values[0];
-      
-      // Salvar idioma no banco de dados
-      client.db.set(`users.${userId}.language`, language);
-      
-      // Obter nome do idioma para exibição
-      const languageNames = {
-        'en': 'English',
-        'pt-br': 'Português (Brasil)',
-        'fr': 'Français',
-        'ja': 'Japanese',
-        'zh': 'Chinese',
-        'es': 'Español'
-      };
-      
-      await interaction.update({ 
-        content: client.getText(userId, 'language_success').replace('{language}', languageNames[language] || language),
-        embeds: [],
-        components: []
-      });
-      return;
-    }
-    
-    // Processar botões
-    if (interaction.isButton()) {
-      // Extrair informações do customId (formato: ação_userId_containerId)
-      const parts = interaction.customId.split('_');
-      const action = parts[0];
-      const userId = parts[1];
-      const containerId = parts[2];
-      
-      // Verificar se o usuário é o dono do container
-      if (interaction.user.id !== userId) {
-        return interaction.reply({ 
-          content: client.getText(interaction.user.id, 'error'), 
-          ephemeral: true 
-        });
+    // Select Menus
+    if (interaction.isStringSelectMenu()) {
+      // Seleção de bot no painel
+      if (interaction.customId === 'select_bot') {
+        const containerId = interaction.values[0];
+        const userId = interaction.user.id;
+        
+        await interaction.deferUpdate();
+        await refreshBotPanel(interaction, userId, containerId, client);
+        return;
       }
       
-      // Buscar container no banco de dados
-      const userContainers = client.db.get(`users.${userId}.containers`) || [];
-      const containerIndex = userContainers.findIndex(c => c.containerId === containerId);
-      
-      if (containerIndex === -1) {
-        return interaction.reply({ 
-          content: client.getText(userId, 'error'), 
-          ephemeral: true 
+      // Seleção de idioma
+      if (interaction.customId === 'select_language') {
+        const userId = interaction.user.id;
+        const language = interaction.values[0];
+        
+        // Salvar idioma no banco de dados
+        client.db.set(`users.${userId}.language`, language);
+        
+        // Obter nome do idioma para exibição
+        const languageNames = {
+          'en': 'English',
+          'pt-br': 'Português (Brasil)',
+          'fr': 'Français',
+          'ja': 'Japanese',
+          'zh': 'Chinese',
+          'es': 'Español'
+        };
+        
+        await interaction.update({ 
+          content: client.getText(userId, 'language_success', { language: languageNames[language] || language }),
+          embeds: [],
+          components: []
         });
+        return;
       }
       
-      const container = userContainers[containerIndex];
+      // Seleção de linguagem no comando up
+      if (interaction.customId === 'select_language_up') {
+        // Tratado no comando up
+        return;
+      }
       
-      // Processar ação do botão
-      await interaction.deferUpdate();
-      
-      switch (action) {
-        case 'start':
-          try {
-            await startContainer(containerId);
-            
-            // Atualizar status no banco de dados
-            container.status = 'running';
-            userContainers[containerIndex] = container;
-            client.db.set(`users.${userId}.containers`, userContainers);
-            
-            // Atualizar painel
-            await refreshBotPanel(interaction, userId, containerId);
-          } catch (error) {
-            console.error('Erro ao iniciar container:', error);
-            await interaction.editReply({ 
-              content: `${client.getText(userId, 'error')}: ${error.message}`, 
-              embeds: [], 
-              components: [] 
+      // Seleção para backup
+      if (interaction.customId.startsWith('backup_location_')) {
+        const [, location, userId, containerId] = interaction.customId.split('_');
+        const locationChoice = interaction.values[0]; // "channel" ou "dm"
+        await interaction.deferUpdate();
+        
+        try {
+          const container = getContainer(client.db, userId, containerId);
+          if (!container) {
+            const replyMessage = await interaction.followUp({ 
+              content: client.getText(userId, 'container_not_found'), 
+              ephemeral: true 
             });
+            setTimeout(() => replyMessage.delete().catch(e => console.error("Error deleting reply:", e)), 7000);
+            return;
           }
-          break;
           
-        case 'stop':
-          try {
-            await stopContainer(containerId);
-            
-            // Atualizar status no banco de dados
-            container.status = 'stopped';
-            userContainers[containerIndex] = container;
-            client.db.set(`users.${userId}.containers`, userContainers);
-            
-            // Atualizar painel
-            await refreshBotPanel(interaction, userId, containerId);
-          } catch (error) {
-            console.error('Erro ao parar container:', error);
-            await interaction.editReply({ 
-              content: `${client.getText(userId, 'error')}: ${error.message}`, 
-              embeds: [], 
-              components: [] 
+          await interaction.editReply({ 
+            content: client.getText(userId, 'backup_generating'), 
+            components: [], 
+            embeds: [] 
+          });
+          
+          const backupZipPath = await createBackup(containerId, { userId, botId: container.botId });
+          const botInfo = await fetchBotInfo(client, container.botId);
+          const backupFile = new AttachmentBuilder(backupZipPath, {
+            name: `backup_${botInfo.username.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.zip`
+          });
+          
+          if (locationChoice === 'channel') {
+            await interaction.editReply({
+              content: client.getText(userId, 'backup_success_channel', { botName: botInfo.username }),
+              files: [backupFile],
+              components: [],
+              embeds: []
             });
-          }
-          break;
-          
-        case 'restart':
-          try {
-            await restartContainer(containerId);
-            
-            // Atualizar status no banco de dados
-            container.status = 'running';
-            userContainers[containerIndex] = container;
-            client.db.set(`users.${userId}.containers`, userContainers);
-            
-            // Atualizar painel
-            await refreshBotPanel(interaction, userId, containerId);
-          } catch (error) {
-            console.error('Erro ao reiniciar container:', error);
-            await interaction.editReply({ 
-              content: `${client.getText(userId, 'error')}: ${error.message}`, 
-              embeds: [], 
-              components: [] 
-            });
-          }
-          break;
-          
-        case 'delete':
-          try {
-            await deleteContainer(containerId);
-            
-            // Remover do banco de dados
-            userContainers.splice(containerIndex, 1);
-            client.db.set(`users.${userId}.containers`, userContainers);
-            
-            // Voltar para a lista de bots
-            const embed = new EmbedBuilder()
-              .setTitle(client.getText(userId, 'cmd_app_title'))
-              .setDescription(client.getText(userId, 'cmd_app_description'))
-              .setColor('#0099ff')
-              .setFooter({ 
-                text: client.getText(userId, 'cmd_app_footer').replace('{count}', userContainers.length) 
+          } else if (locationChoice === 'dm') {
+            try {
+              const dmChannel = await interaction.user.createDM();
+              await dmChannel.send({ 
+                content: client.getText(userId, 'backup_success_channel', { botName: botInfo.username }), 
+                files: [backupFile] 
               });
+              await interaction.editReply(client.getText(userId, 'backup_success_dm'));
+            } catch (error) {
+              console.error('Erro ao enviar DM:', error);
+              await interaction.editReply(client.getText(userId, 'backup_error_dm'));
+            }
+          }
+          
+          fs.unlinkSync(backupZipPath);
+        } catch (error) {
+          console.error('Erro ao criar backup:', error);
+          await interaction.editReply(client.getText(userId, 'backup_error', { error: error.message }));
+        }
+        
+        // Atualiza o painel após o backup
+        await refreshBotPanel(interaction.message, userId, containerId, client);
+        return;
+      }
+      
+      // Seleção para apt install
+      if (interaction.customId.startsWith('apt_install_')) {
+        const packages = interaction.customId.split('_')[2];
+        const containerId = interaction.values[0];
+        const userId = interaction.user.id;
+        
+        await interaction.deferUpdate();
+        await interaction.editReply({ 
+          content: client.getText(userId, 'apt_installing', { packages }), 
+          components: [], 
+          embeds: [] 
+        });
+        
+        try {
+          const container = getContainer(client.db, userId, containerId);
+          if (!container) {
+            await interaction.editReply(client.getText(userId, 'container_not_found'));
+            return;
+          }
+          
+          await exec(`docker exec ${containerId} apt-get update`);
+          const { stdout } = await exec(`docker exec ${containerId} apt-get install -y ${packages}`);
+          
+          await interaction.editReply(
+            client.getText(userId, 'apt_success', { 
+              output: stdout.slice(0,1500) + (stdout.length > 1500 ? '...' : '') 
+            })
+          );
+        } catch (error) {
+          console.error('Erro ao instalar pacotes:', error);
+          await interaction.editReply(client.getText(userId, 'apt_error', { error: error.message }));
+        }
+        
+        await refreshBotPanel(interaction.message, userId, containerId, client);
+        return;
+      }
+    }
+    
+    // Botões
+    if (interaction.isButton()) {
+      const [action, userId, containerId] = interaction.customId.split('_');
+      
+      if (userId !== interaction.user.id) {
+        const replyMessage = await interaction.reply({ 
+          content: client.getText(interaction.user.id, 'container_no_permission'), 
+          ephemeral: true 
+        });
+        setTimeout(() => replyMessage.delete().catch(e => console.error("Error deleting reply:", e)), 7000);
+        return;
+      }
+      
+      const container = getContainer(client.db, userId, containerId);
+      if (!container) {
+        const replyMessage = await interaction.reply({ 
+          content: client.getText(userId, 'container_not_found'), 
+          ephemeral: true 
+        });
+        setTimeout(() => replyMessage.delete().catch(e => console.error("Error deleting reply:", e)), 7000);
+        return;
+      }
+      
+      await interaction.deferUpdate();
+      
+      let successMessage = '';
+      try {
+        switch(action) {
+          case 'start':
+            await startContainer(containerId);
+            container.status = 'running';
+            updateContainer(client.db, userId, container);
+            successMessage = client.getText(userId, 'container_start_success', { botId: container.botId });
+            break;
             
+          case 'stop':
+            await stopContainer(containerId);
+            container.status = 'stopped';
+            updateContainer(client.db, userId, container);
+            successMessage = client.getText(userId, 'container_stop_success', { botId: container.botId });
+            break;
+            
+          case 'restart':
+            await restartContainer(containerId);
+            container.status = 'running';
+            updateContainer(client.db, userId, container);
+            successMessage = client.getText(userId, 'container_restart_success', { botId: container.botId });
+            break;
+            
+          case 'delete':
+            await deleteContainer(containerId);
+            removeContainer(client.db, userId, containerId);
+            successMessage = client.getText(userId, 'container_delete_success', { botId: container.botId });
+            
+            const userContainers = getUserContainers(client.db, userId);
             if (userContainers.length === 0) {
               await interaction.editReply({ 
                 content: client.getText(userId, 'cmd_app_no_bots'), 
                 embeds: [], 
                 components: [] 
               });
+              return;
             } else {
-              // Criar select menu com lista de bots
+              const embed = new EmbedBuilder()
+                .setTitle(client.getText(userId, 'cmd_app_title'))
+                .setDescription(client.getText(userId, 'cmd_app_description'))
+                .setColor('#0099ff')
+                .setFooter({ 
+                  text: client.getText(userId, 'cmd_app_footer', { count: userContainers.length }) 
+                });
+                
               const options = [];
-              for (const container of userContainers) {
+              for (const c of userContainers) {
                 try {
-                  const botInfo = await interaction.client.users.fetch(container.botId);
+                  const botInfo = await fetchBotInfo(client, c.botId);
                   options.push({
-                    label: botInfo.username || `Bot ${container.botId}`,
-                    description: `Status: ${container.status} | RAM: ${container.ram}MB`,
-                    value: container.containerId
+                    label: botInfo.username || `Bot ${c.botId}`,
+                    description: `Status: ${c.status} | RAM: ${c.ram}MB`,
+                    value: c.containerId
                   });
                 } catch (error) {
                   options.push({
-                    label: `Bot ${container.botId}`,
-                    description: `Status: ${container.status} | RAM: ${container.ram}MB`,
-                    value: container.containerId
+                    label: `Bot ${c.botId}`,
+                    description: `Status: ${c.status} | RAM: ${c.ram}MB`,
+                    value: c.containerId
                   });
                 }
               }
               
-              const row = new ActionRowBuilder()
-                .addComponents(
-                  new StringSelectMenuBuilder()
-                    .setCustomId('select_bot')
-                    .setPlaceholder(client.getText(userId, 'cmd_app_description'))
-                    .addOptions(options)
-                );
+              const row = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                  .setCustomId('select_bot')
+                  .setPlaceholder(client.getText(userId, 'cmd_app_description'))
+                  .addOptions(options)
+              );
               
               await interaction.editReply({ embeds: [embed], components: [row] });
+              return;
             }
-          } catch (error) {
-            console.error('Erro ao excluir container:', error);
-            await interaction.editReply({ 
-              content: `${client.getText(userId, 'error')}: ${error.message}`, 
-              embeds: [], 
-              components: [] 
-            });
-          }
-          break;
-          
-        case 'refresh':
-          // Atualizar painel
-          await refreshBotPanel(interaction, userId, containerId);
-          break;
-          
-        case 'backup':
-          try {
-            await interaction.editReply({ 
-              content: client.getText(userId, 'success'), 
-              embeds: [], 
-              components: [] 
-            });
             
-            // Criar backup
-            const backupPath = await createBackup(containerId, container);
+          case 'refresh':
+            successMessage = client.getText(userId, 'container_refresh_success');
+            break;
             
-            // Enviar arquivo de backup
-            await interaction.followUp({
-              content: `${client.getText(userId, 'success')}`,
-              files: [backupPath],
-              ephemeral: true
-            });
+          case 'backup':
+            const backupRow = new ActionRowBuilder().addComponents(
+              new StringSelectMenuBuilder()
+                .setCustomId(`backup_location_${userId}_${containerId}`)
+                .setPlaceholder(client.getText(userId, 'backup_description'))
+                .addOptions([
+                  {
+                    label: client.getText(userId, 'backup_channel'),
+                    value: 'channel',
+                    emoji: '📝'
+                  },
+                  {
+                    label: client.getText(userId, 'backup_dm'),
+                    value: 'dm',
+                    emoji: '📨'
+                  }
+                ])
+            );
             
-            // Remover arquivo de backup após envio
-            fs.unlinkSync(backupPath);
+            const backupEmbed = new EmbedBuilder()
+              .setTitle(client.getText(userId, 'backup_title'))
+              .setDescription(client.getText(userId, 'backup_description'))
+              .setColor('#0099ff');
+              
+            await interaction.editReply({ embeds: [backupEmbed], components: [backupRow] });
+            return;
             
-            // Atualizar painel
-            await refreshBotPanel(interaction, userId, containerId);
-          } catch (error) {
-            console.error('Erro ao criar backup:', error);
-            await interaction.editReply({ 
-              content: `${client.getText(userId, 'error')}: ${error.message}`, 
-              embeds: [], 
-              components: [] 
-            });
-          }
-          break;
-          
-        case 'terminal':
-          try {
-            // Obter logs do container
-            const { stdout } = await exec(`docker logs --tail 50 ${containerId}`);
-            
-            // Formatando logs para embed
-            const logs = stdout.slice(-4000); // Limitar a 4000 caracteres por causa das limitações do Discord
-            
-            const embed = new EmbedBuilder()
-              .setTitle(client.getText(userId, 'logs_title').replace('{botName}', container.name))
-              .setDescription(client.getText(userId, 'logs_description'))
-              .setColor('#0099ff')
-              .setTimestamp();
-            
-            // Criar múltiplos fields se necessário (limitação de 1024 caracteres por field)
-            if (logs.length === 0) {
-              embed.addFields({ name: client.getText(userId, 'logs_title'), value: client.getText(userId, 'logs_empty') });
-            } else if (logs.length <= 1024) {
-              embed.addFields({ name: client.getText(userId, 'logs_title'), value: `\`\`\`\n${logs}\n\`\`\`` });
-            } else {
-              // Dividir logs em partes
-              for (let i = 0; i < logs.length; i += 1000) {
-                const part = logs.substring(i, Math.min(i + 1000, logs.length));
-                embed.addFields({ name: i === 0 ? client.getText(userId, 'logs_title') : '...', value: `\`\`\`\n${part}\n\`\`\`` });
+          case 'terminal':
+            try {
+              // Obter logs do container
+              const { stdout } = await exec(`docker logs --tail 50 ${containerId}`);
+              
+              // Formatando logs para embed
+              const logs = stdout.slice(-4000); // Limitar a 4000 caracteres por causa das limitações do Discord
+              
+              const embed = new EmbedBuilder()
+                .setTitle(client.getText(userId, 'logs_title', { botName: container.name }))
+                .setDescription(client.getText(userId, 'logs_description'))
+                .setColor('#0099ff')
+                .setTimestamp();
+              
+              // Criar múltiplos fields se necessário (limitação de 1024 caracteres por field)
+              if (logs.length === 0) {
+                embed.addFields({ 
+                  name: client.getText(userId, 'logs_title', { botName: '' }), 
+                  value: client.getText(userId, 'logs_empty') 
+                });
+              } else if (logs.length <= 1024) {
+                embed.addFields({ 
+                  name: client.getText(userId, 'logs_title', { botName: '' }), 
+                  value: `\`\`\`\n${logs}\n\`\`\`` 
+                });
+              } else {
+                // Dividir logs em partes
+                for (let i = 0; i < logs.length; i += 1000) {
+                  const part = logs.substring(i, Math.min(i + 1000, logs.length));
+                  embed.addFields({ 
+                    name: i === 0 ? client.getText(userId, 'logs_title', { botName: '' }) : '...', 
+                    value: `\`\`\`\n${part}\n\`\`\`` 
+                  });
+                }
               }
-            }
-            
-            // Botão para voltar
-            const row = new ActionRowBuilder()
-              .addComponents(
+              
+              // Botão para voltar
+              const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                   .setCustomId(`backToPanel_${userId}_${containerId}`)
                   .setLabel(client.getText(userId, 'btn_back'))
@@ -290,275 +501,174 @@ module.exports = {
                   .setLabel(client.getText(userId, 'btn_refresh'))
                   .setStyle(ButtonStyle.Primary)
               );
-            
-            await interaction.editReply({ embeds: [embed], components: [row] });
-          } catch (error) {
-            console.error('Erro ao obter logs:', error);
-            await interaction.editReply({ 
-              content: `${client.getText(userId, 'error')}: ${error.message}`, 
-              embeds: [], 
-              components: [] 
-            });
-          }
-          break;
-          
-        case 'backToPanel':
-          // Voltar para o painel principal do bot
-          await refreshBotPanel(interaction, userId, containerId);
-          break;
-          
-        case 'refreshLogs':
-          try {
-            // Obter logs atualizados do container
-            const { stdout } = await exec(`docker logs --tail 50 ${containerId}`);
-            
-            // Formatando logs para embed
-            const logs = stdout.slice(-4000); // Limitar a 4000 caracteres por causa das limitações do Discord
-            
-            const embed = new EmbedBuilder()
-              .setTitle(client.getText(userId, 'logs_title').replace('{botName}', container.name))
-              .setDescription(client.getText(userId, 'logs_description'))
-              .setColor('#0099ff')
-              .setTimestamp();
-            
-            // Criar múltiplos fields se necessário (limitação de 1024 caracteres por field)
-            if (logs.length === 0) {
-              embed.addFields({ name: client.getText(userId, 'logs_title'), value: client.getText(userId, 'logs_empty') });
-            } else if (logs.length <= 1024) {
-              embed.addFields({ name: client.getText(userId, 'logs_title'), value: `\`\`\`\n${logs}\n\`\`\`` });
-            } else {
-              // Dividir logs em partes
-              for (let i = 0; i < logs.length; i += 1000) {
-                const part = logs.substring(i, Math.min(i + 1000, logs.length));
-                embed.addFields({ name: i === 0 ? client.getText(userId, 'logs_title') : '...', value: `\`\`\`\n${part}\n\`\`\`` });
-              }
-            }
-            
-            // Botão para voltar
-            const row = new ActionRowBuilder()
-              .addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`backToPanel_${userId}_${containerId}`)
-                  .setLabel(client.getText(userId, 'btn_back'))
-                  .setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder()
-                  .setCustomId(`refreshLogs_${userId}_${containerId}`)
-                  .setLabel(client.getText(userId, 'btn_refresh'))
-                  .setStyle(ButtonStyle.Primary)
-              );
-            
-            await interaction.editReply({ embeds: [embed], components: [row] });
-          } catch (error) {
-            console.error('Erro ao atualizar logs:', error);
-            await interaction.editReply({ 
-              content: `${client.getText(userId, 'error')}: ${error.message}`, 
-              embeds: [], 
-              components: [] 
-            });
-          }
-          break;
-          
-        case 'resetmemory':
-          // Criar um modal para alterar a memória RAM
-          try {
-            await interaction.editReply({ 
-              content: client.getText(userId, 'cmd_up_ram'),
-              embeds: [], 
-              components: [] 
-            });
-            
-            // Filtro para mensagens de resposta
-            const filter = m => m.author.id === interaction.user.id && 
-                               !isNaN(m.content) && 
-                               parseInt(m.content) >= 128 && 
-                               parseInt(m.content) <= 512;
-            
-            const channel = interaction.channel;
-            const collected = await channel.awaitMessages({ filter, max: 1, time: 30000, errors: ['time'] });
-            const newRam = parseInt(collected.first().content);
-            
-            // Tentar apagar a mensagem do usuário para limpar o chat
-            try {
-              await collected.first().delete();
-            } catch (e) {
-              console.error('Não foi possível excluir a mensagem:', e);
-            }
-            
-            await interaction.editReply({ content: client.getText(userId, 'success') });
-            
-            // Parar o container
-            await stopContainer(containerId);
-            
-            // Atualizar configurações
-            await exec(`docker update --memory=${newRam}m --memory-swap=${newRam}m ${containerId}`);
-            
-            // Iniciar o container novamente
-            await startContainer(containerId);
-            
-            // Atualizar o banco de dados
-            container.ram = newRam;
-            container.status = 'running';
-            userContainers[containerIndex] = container;
-            client.db.set(`users.${userId}.containers`, userContainers);
-            
-            // Atualizar o painel de controle
-            await refreshBotPanel(interaction, userId, containerId);
-            
-          } catch (error) {
-            console.error('Erro ao alterar memória RAM:', error);
-            if (error.name === 'Error [INTERACTION_COLLECTOR_ERROR]') {
-              await interaction.editReply({ content: client.getText(userId, 'timeout') });
-            } else {
-              await interaction.editReply({ 
-                content: `${client.getText(userId, 'error')}: ${error.message}` 
-              });
-            }
-          }
-          break;
-          
-        case 'commit':
-          try {
-            // Criar canal temporário para upload
-            const guild = interaction.guild;
-            const category = guild.channels.cache.find(c => c.name === 'Bot Hosting' && c.type === 4) || 
-                            await guild.channels.create({ name: 'Bot Hosting', type: 4 });
-            
-            const channel = await guild.channels.create({
-              name: `update-${interaction.user.username}`,
-              type: 0, // Text Channel
-              parent: category.id,
-              permissionOverwrites: [
-                {
-                  id: guild.id,
-                  deny: ['ViewChannel'],
-                },
-                {
-                  id: interaction.user.id,
-                  allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
-                },
-                {
-                  id: interaction.client.user.id,
-                  allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
-                },
-              ],
-            });
-            
-            await interaction.editReply({ 
-              content: client.getText(userId, 'cmd_up_setup_channel').replace('{channel}', channel.toString()), 
-              embeds: [], 
-              components: [] 
-            });
-            
-            // Iniciar processo de upload no canal
-            await channel.send(client.getText(userId, 'cmd_up_hello').replace('{user}', interaction.user.toString()));
-            await channel.send(client.getText(userId, 'cmd_up_zip'));
-            
-            // Filtro para arquivo ZIP
-            const zipFilter = m => m.author.id === interaction.user.id && 
-                                  m.attachments.size > 0 && 
-                                  m.attachments.first().name.endsWith('.zip');
-            
-            // Aguardar upload do arquivo ZIP
-            let zipAttachment;
-            try {
-              const zipCollected = await channel.awaitMessages({ filter: zipFilter, max: 1, time: 300000, errors: ['time'] });
-              zipAttachment = zipCollected.first().attachments.first();
-              await channel.send(client.getText(userId, 'cmd_up_zip_received'));
+              
+              await interaction.editReply({ embeds: [embed], components: [row] });
+              return;
             } catch (error) {
-              await channel.send(client.getText(userId, 'invalid_file'));
-              setTimeout(() => channel.delete(), 5000);
+              console.error('Erro ao obter logs:', error);
+              const logsReply = await interaction.editReply({ 
+                content: `❌ ${client.getText(userId, 'error')}: \`\`\`${error.message}\`\`\``, 
+                embeds: [], 
+                components: [] 
+              });
+              setTimeout(() => logsReply.delete().catch(e => console.error("Error deleting logs reply:", e)), 7000);
+              await refreshBotPanel(interaction.message, userId, containerId, client);
               return;
             }
             
-            // Processar o ZIP e atualizar o container
-            await channel.send(client.getText(userId, 'cmd_up_creating_env'));
+          case 'backToPanel':
+            // Voltar para o painel principal do bot
+            await refreshBotPanel(interaction, userId, containerId, client);
+            return;
             
-            // Baixar o arquivo ZIP
-            const zipPath = path.join(__dirname, '..', 'temp', `${userId}_${container.botId}.zip`);
-            const extractPath = path.join(__dirname, '..', 'containers', userId, container.botId);
-            
-            // Criar diretórios necessários
-            fs.mkdirSync(path.join(__dirname, '..', 'temp'), { recursive: true });
-            fs.mkdirSync(extractPath, { recursive: true });
-            
-            // Baixar o arquivo ZIP
-            const response = await axios({
-              method: 'get',
-              url: zipAttachment.url,
-              responseType: 'arraybuffer'
-            });
-            
-            fs.writeFileSync(zipPath, Buffer.from(response.data));
-            
-            // Extrair o arquivo ZIP
-            const zip = new AdmZip(zipPath);
-            zip.extractAllTo(extractPath, true);
-            
-            // Remover o arquivo ZIP temporário
-            fs.unlinkSync(zipPath);
-            
-            // Criar o Dockerfile
-            const config = client.config;
-            const languageConfig = config.supportedProgrammingLanguages.find(l => l.id === container.language);
-            
-            if (!languageConfig) {
-              await channel.send(`${client.getText(userId, 'error')}: Linguagem não suportada`);
-              setTimeout(() => channel.delete(), 5000);
+          case 'refreshLogs':
+            try {
+              // Obter logs atualizados do container
+              const { stdout } = await exec(`docker logs --tail 50 ${containerId}`);
+              
+              // Formatando logs para embed
+              const logs = stdout.slice(-4000); // Limitar a 4000 caracteres por causa das limitações do Discord
+              
+              const embed = new EmbedBuilder()
+                .setTitle(client.getText(userId, 'logs_title', { botName: container.name }))
+                .setDescription(client.getText(userId, 'logs_description'))
+                .setColor('#0099ff')
+                .setTimestamp();
+              
+              // Criar múltiplos fields se necessário (limitação de 1024 caracteres por field)
+              if (logs.length === 0) {
+                embed.addFields({ 
+                  name: client.getText(userId, 'logs_title', { botName: '' }), 
+                  value: client.getText(userId, 'logs_empty') 
+                });
+              } else if (logs.length <= 1024) {
+                embed.addFields({ 
+                  name: client.getText(userId, 'logs_title', { botName: '' }), 
+                  value: `\`\`\`\n${logs}\n\`\`\`` 
+                });
+              } else {
+                // Dividir logs em partes
+                for (let i = 0; i < logs.length; i += 1000) {
+                  const part = logs.substring(i, Math.min(i + 1000, logs.length));
+                  embed.addFields({ 
+                    name: i === 0 ? client.getText(userId, 'logs_title', { botName: '' }) : '...', 
+                    value: `\`\`\`\n${part}\n\`\`\`` 
+                  });
+                }
+              }
+              
+              // Botão para voltar
+              const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`backToPanel_${userId}_${containerId}`)
+                  .setLabel(client.getText(userId, 'btn_back'))
+                  .setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder()
+                  .setCustomId(`refreshLogs_${userId}_${containerId}`)
+                  .setLabel(client.getText(userId, 'btn_refresh'))
+                  .setStyle(ButtonStyle.Primary)
+              );
+              
+              await interaction.editReply({ embeds: [embed], components: [row] });
+              return;
+            } catch (error) {
+              console.error('Erro ao atualizar logs:', error);
+              const logsReply = await interaction.editReply({ 
+                content: `❌ ${client.getText(userId, 'error')}: \`\`\`${error.message}\`\`\``, 
+                embeds: [], 
+                components: [] 
+              });
+              setTimeout(() => logsReply.delete().catch(e => console.error("Error deleting logs reply:", e)), 7000);
+              await refreshBotPanel(interaction.message, userId, containerId, client);
               return;
             }
             
-            let dockerfileContent = languageConfig.dockerfile.replace('{{MAIN_FILE}}', container.mainFile);
-            
-            // Caso especial para C#
-            if (container.language === 'csharp') {
-              // Extrair nome do projeto do arquivo principal
-              const projectName = path.basename(container.mainFile, '.cs');
-              dockerfileContent = dockerfileContent.replace('{{PROJECT_NAME}}', projectName);
+          case 'resetmemory':
+            // Criar um modal para alterar a memória RAM
+            try {
+              await interaction.editReply({ 
+                content: client.getText(userId, 'cmd_up_ram'),
+                embeds: [], 
+                components: [] 
+              });
+              
+              // Filtro para mensagens de resposta
+              const filter = m => m.author.id === interaction.user.id && 
+                                !isNaN(m.content) && 
+                                parseInt(m.content) >= 128 && 
+                                parseInt(m.content) <= 512;
+              
+              const channel = interaction.channel;
+              const collected = await channel.awaitMessages({ filter, max: 1, time: 30000, errors: ['time'] });
+              const newRam = parseInt(collected.first().content);
+              
+              // Tentar apagar a mensagem do usuário para limpar o chat
+              try {
+                await collected.first().delete();
+              } catch (e) {
+                console.error('Não foi possível excluir a mensagem:', e);
+              }
+              
+              await interaction.editReply({ content: client.getText(userId, 'success') });
+              
+              // Parar o container
+              await stopContainer(containerId);
+              
+              // Atualizar configurações
+              await exec(`docker update --memory=${newRam}m --memory-swap=${newRam}m ${containerId}`);
+              
+              // Iniciar o container novamente
+              await startContainer(containerId);
+              
+              // Atualizar o banco de dados
+              container.ram = newRam;
+              container.status = 'running';
+              updateContainer(client.db, userId, container);
+              
+              // Atualizar o painel de controle
+              await refreshBotPanel(interaction.message, userId, containerId, client);
+              return;
+            } catch (error) {
+              console.error('Erro ao alterar memória RAM:', error);
+              if (error.name === 'Error [INTERACTION_COLLECTOR_ERROR]') {
+                await interaction.editReply({ content: client.getText(userId, 'timeout') });
+              } else {
+                await interaction.editReply({ 
+                  content: `${client.getText(userId, 'error')}: ${error.message}` 
+                });
+              }
+              await refreshBotPanel(interaction.message, userId, containerId, client);
+              return;
             }
             
-            fs.writeFileSync(path.join(extractPath, 'Dockerfile'), dockerfileContent);
-            
-            // Criar o container
-            await channel.send(client.getText(userId, 'cmd_up_creating_container'));
-            
-            // Construir a imagem Docker
-            const imageName = `bot-host-${userId}-${container.botId}`.toLowerCase();
-            
-            await exec(`docker build -t ${imageName} ${extractPath}`);
-            
-            // Parar e remover o container antigo
-            await stopContainer(containerId);
-            await deleteContainer(containerId);
-            
-            // Criar e iniciar o novo container
-            const createResult = await exec(`docker create --name ${container.name} -m ${container.ram}m --memory-swap ${container.ram}m --cpu-shares 128 --restart unless-stopped ${imageName}`);
-            
-            const newContainerId = createResult.stdout.trim();
-            await exec(`docker start ${newContainerId}`);
-            
-            // Atualizar o banco de dados
-            container.containerId = newContainerId;
-            container.status = 'running';
-            container.updatedAt = new Date().toISOString();
-            userContainers[containerIndex] = container;
-            client.db.set(`users.${userId}.containers`, userContainers);
-            
-            await channel.send(`✅ ${client.getText(userId, 'success')}! ID: \`${newContainerId}\``);
-            setTimeout(() => channel.delete(), 30000);
-            
-            // Atualizar o painel de controle
-            await refreshBotPanel(interaction, userId, newContainerId);
-            
-          } catch (error) {
-            console.error('Erro ao atualizar container:', error);
-            await interaction.editReply({ 
-              content: `${client.getText(userId, 'error')}: ${error.message}`, 
-              embeds: [], 
-              components: [] 
-            });
-          }
-          break;
+          case 'commit':
+            // Implementação do botão de atualização de código
+            // Será tratado separadamente devido à complexidade
+            return;
+        }
+        
+        if (['start', 'stop', 'restart'].includes(action)) {
+          updateContainer(client.db, userId, container);
+        }
+        
+        const tempReply = await interaction.followUp({ 
+          content: successMessage, 
+          ephemeral: true 
+        });
+        
+        setTimeout(() => tempReply.delete().catch(e => console.error("Error deleting temp reply:", e)), 7000);
+        await refreshBotPanel(interaction.message, userId, containerId, client);
+      } catch (error) {
+        console.error(`Erro no botão (${interaction.customId}):`, error);
+        const tempErrorReply = await interaction.followUp({ 
+          content: `❌ ${client.getText(userId, 'error')}: \`\`\`${error.message}\`\`\``, 
+          ephemeral: true 
+        });
+        
+        setTimeout(() => tempErrorReply.delete().catch(e => console.error("Error deleting error reply:", e)), 7000);
+        await refreshBotPanel(interaction.message, userId, containerId, client);
       }
     }
-  }
+  },
+  refreshBotPanel
 };

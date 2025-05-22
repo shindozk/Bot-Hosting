@@ -68,8 +68,89 @@ function getAvailableLanguages() {
   }
 }
 
+/**
+ * Inicializa o usuário no banco de dados se não existir
+ * @param {Object} db - Instância do banco de dados
+ * @param {string} userId - ID do usuário
+ * @param {string} defaultLanguage - Idioma padrão
+ */
+function initializeUser(db, userId, defaultLanguage = 'en') {
+  // Verifica se o usuário já existe no banco
+  const userData = db.get(`users.${userId}`);
+  
+  // Se não existir, cria um registro para o usuário
+  if (!userData) {
+    db.set(`users.${userId}`, {
+      language: defaultLanguage,
+      containers: []
+    });
+    console.log(`Usuário ${userId} inicializado no banco de dados com idioma ${defaultLanguage}`);
+  } else if (!userData.containers) {
+    // Se existir mas não tiver o campo containers, adiciona
+    db.set(`users.${userId}.containers`, []);
+    console.log(`Campo containers adicionado para o usuário ${userId}`);
+  }
+  
+  return db.get(`users.${userId}`);
+}
+
+/**
+ * Obtém o idioma do usuário
+ * @param {Object} db - Instância do banco de dados
+ * @param {string} userId - ID do usuário
+ * @param {string} defaultLanguage - Idioma padrão
+ * @returns {string} - Código do idioma do usuário
+ */
+function getUserLanguage(db, userId, defaultLanguage = 'en') {
+  // Inicializa o usuário se não existir
+  initializeUser(db, userId, defaultLanguage);
+  
+  // Retorna o idioma do usuário
+  return db.get(`users.${userId}.language`) || defaultLanguage;
+}
+
+/**
+ * Obtém texto traduzido para o idioma do usuário
+ * @param {Object} db - Instância do banco de dados
+ * @param {string} userId - ID do usuário
+ * @param {string} key - Chave do texto a ser traduzido
+ * @param {Object} replacements - Substituições a serem feitas no texto
+ * @param {string} defaultLanguage - Idioma padrão
+ * @returns {string} - Texto traduzido
+ */
+function getText(db, userId, key, replacements = {}, defaultLanguage = 'en') {
+  // Obtém o idioma do usuário
+  const userLanguage = getUserLanguage(db, userId, defaultLanguage);
+  
+  // Carrega o arquivo de idioma
+  const langFile = loadLanguage(userLanguage);
+  
+  // Obtém o texto traduzido
+  let text = langFile[key];
+  
+  // Se não encontrar, tenta no idioma padrão
+  if (!text) {
+    text = loadLanguage(defaultLanguage)[key];
+  }
+  
+  // Se ainda não encontrar, retorna a chave
+  if (!text) {
+    return key;
+  }
+  
+  // Faz as substituições
+  Object.entries(replacements).forEach(([placeholder, value]) => {
+    text = text.replace(new RegExp(`{${placeholder}}`, 'g'), value);
+  });
+  
+  return text;
+}
+
 module.exports = {
   loadLanguage,
   clearLanguageCache,
-  getAvailableLanguages
+  getAvailableLanguages,
+  initializeUser,
+  getUserLanguage,
+  getText
 };

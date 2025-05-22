@@ -1,5 +1,6 @@
 // Comando language - Altera o idioma do bot
 const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
+const { getAvailableLanguages } = require('../utils/languageManager');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -10,34 +11,45 @@ module.exports = {
     const { client } = interaction;
     const userId = interaction.user.id;
     
-    // Obter idioma atual
-    const currentLanguage = client.db.get(`users.${userId}.language`) || client.config.defaultLanguage;
+    // Obter idiomas disponíveis
+    const availableLanguages = getAvailableLanguages();
     
-    // Criar embed com opções de idioma
+    // Mapear nomes de idiomas
+    const languageNames = {
+      'en': 'English',
+      'pt-br': 'Português (Brasil)',
+      'fr': 'Français',
+      'ja': '日本語',
+      'zh': '中文',
+      'es': 'Español'
+    };
+    
+    // Criar opções para o select menu
+    const options = availableLanguages.map(lang => ({
+      label: languageNames[lang] || lang,
+      value: lang,
+      default: client.db.get(`users.${userId}.language`) === lang
+    }));
+    
+    // Criar embed
     const embed = new EmbedBuilder()
       .setTitle(client.getText(userId, 'language_title'))
       .setDescription(client.getText(userId, 'language_description'))
       .setColor('#0099ff');
     
-    // Mapear idiomas disponíveis para o select menu
-    const languageOptions = [
-      { label: 'English', value: 'en', description: 'English language', emoji: '🇺🇸' },
-      { label: 'Português (Brasil)', value: 'pt-br', description: 'Idioma português do Brasil', emoji: '🇧🇷' },
-      { label: 'Français', value: 'fr', description: 'Langue française', emoji: '🇫🇷' },
-      { label: '日本語', value: 'ja', description: 'Japanese language', emoji: '🇯🇵' },
-      { label: '中文', value: 'zh', description: 'Chinese language', emoji: '🇨🇳' },
-      { label: 'Español', value: 'es', description: 'Idioma español', emoji: '🇪🇸' }
-    ];
-    
     // Criar select menu
-    const row = new ActionRowBuilder()
-      .addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId('select_language')
-          .setPlaceholder(client.getText(userId, 'language_description'))
-          .addOptions(languageOptions)
-      );
+    const row = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('select_language')
+        .setPlaceholder(client.getText(userId, 'language_description'))
+        .addOptions(options)
+    );
     
-    await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+    // Enviar resposta
+    await interaction.reply({
+      embeds: [embed],
+      components: [row],
+      ephemeral: true
+    });
   }
 };

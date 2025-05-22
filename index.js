@@ -1,10 +1,24 @@
 // Arquivo principal do bot
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
+const { 
+  Client, 
+  GatewayIntentBits, 
+  Collection, 
+  EmbedBuilder, 
+  ActionRowBuilder, 
+  StringSelectMenuBuilder, 
+  ButtonBuilder, 
+  ButtonStyle, 
+  AttachmentBuilder, 
+  MessageFlags 
+} = require('discord.js');
+const { REST } = require('@discordjs/rest');
+const { Routes } = require('discord-api-types/v10');
 const fs = require('fs');
 const path = require('path');
 const { JsonDatabase } = require('wio.db');
 const config = require('./config/config');
-const { loadLanguage } = require('./utils/languageManager');
+const { initializeUser, getUserLanguage, getText } = require('./utils/languageManager');
+const { getUserContainers } = require('./utils/userManager');
 
 // Inicialização do banco de dados
 const db = new JsonDatabase({ databasePath: './database.json' });
@@ -23,6 +37,11 @@ const client = new Client({
 client.commands = new Collection();
 client.db = db;
 client.config = config;
+
+// Função para obter texto traduzido
+client.getText = function(userId, key, replacements = {}) {
+  return getText(db, userId, key, replacements, config.defaultLanguage);
+};
 
 // Carregar comandos
 const commandsPath = path.join(__dirname, 'commands');
@@ -57,11 +76,13 @@ for (const file of eventFiles) {
   console.log(`Evento carregado: ${event.name}`);
 }
 
-// Função para obter texto traduzido
-client.getText = function(userId, key) {
-  const userLanguage = db.get(`users.${userId}.language`) || config.defaultLanguage;
-  return loadLanguage(userLanguage)[key] || loadLanguage(config.defaultLanguage)[key] || key;
-};
+// Inicializar usuário antes de qualquer interação
+client.on('interactionCreate', async (interaction) => {
+  // Inicializar usuário no banco de dados se não existir
+  if (interaction.user && interaction.user.id) {
+    initializeUser(db, interaction.user.id, config.defaultLanguage);
+  }
+});
 
 // Login do bot
 client.login(config.token);

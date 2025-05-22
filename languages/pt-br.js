@@ -12,16 +12,18 @@ module.exports = {
   cmd_app_footer: "{count} bots hospedados",
   
   // Painel de gerenciamento
-  panel_title: "Bot: {botName}",
-  panel_description: "Gerenciamento do seu bot hospedado",
-  panel_status: "Status",
-  panel_language: "Linguagem",
-  panel_main_file: "Arquivo Principal",
-  panel_ram_allocated: "RAM Alocada",
-  panel_cpu_usage: "Uso de CPU",
-  panel_ram_usage: "Uso de RAM",
-  panel_disk_usage: "Uso de Disco",
-  panel_created_at: "Criado em",
+  panel_title: "🤖 Painel do Bot: {botName}",
+  panel_description: "Gerenciamento do seu bot hospedado (ID: `{containerId}`)",
+  panel_status: "📊 Status",
+  panel_language: "🌐 Linguagem",
+  panel_main_file: "📄 Arquivo Principal",
+  panel_uptime: "⏰ Uptime",
+  panel_ram_allocated: "🧠 RAM Alocada",
+  panel_cpu_usage: "💻 Uso de CPU",
+  panel_ram_usage: "🧠 Uso de RAM",
+  panel_disk_usage: "💾 Uso de Disco",
+  panel_created_at: "📅 Criado em",
+  panel_last_update: "Última atualização: {time}",
   
   // Botões do painel
   btn_start: "Iniciar",
@@ -29,9 +31,9 @@ module.exports = {
   btn_restart: "Reiniciar",
   btn_delete: "Excluir",
   btn_refresh: "Atualizar",
-  btn_upload: "Upload",
+  btn_upload: "Atualizar Código",
   btn_change_ram: "Alterar RAM",
-  btn_logs: "Logs",
+  btn_logs: "Ver Logs",
   btn_backup: "Backup",
   btn_back: "Voltar",
   
@@ -87,5 +89,35 @@ module.exports = {
   ping_docker_status: "Estado do Docker",
   ping_system_cpu: "CPU do sistema",
   ping_system_memory: "Memória do sistema",
-  ping_system_uptime: "Tempo de atividade"
+  ping_system_uptime: "Tempo de atividade",
+  
+  // Apt
+  apt_title: "Instalação de Pacotes",
+  apt_description: "Selecione um bot para instalar pacotes:",
+  apt_installing: "Instalando pacotes: `{packages}`...",
+  apt_success: "✅ Pacotes instalados!\n\nSaída:\n```{output}```",
+  apt_error: "❌ Erro ao instalar pacotes: ```{error}```",
+  
+  // Backup
+  backup_title: "Backup",
+  backup_description: "Selecione onde enviar o backup:",
+  backup_channel: "Enviar neste canal",
+  backup_dm: "Enviar por DM",
+  backup_generating: "Gerando backup... Por favor, aguarde.",
+  backup_success_channel: "Aqui está o backup do bot **{botName}**:",
+  backup_success_dm: "✅ Backup enviado por DM!",
+  backup_error_dm: "❌ Não foi possível enviar o backup por DM.",
+  backup_error: "❌ Erro ao criar backup: ```{error}```",
+  
+  // Ações de container
+  container_start_success: "✅ Container do bot <@{botId}> iniciado!",
+  container_stop_success: "✅ Container do bot <@{botId}> parado!",
+  container_restart_success: "✅ Container do bot <@{botId}> reiniciado!",
+  container_delete_success: "✅ Container do bot <@{botId}> excluído!",
+  container_refresh_success: "✅ Painel atualizado!",
+  container_not_found: "Container não encontrado!",
+  container_no_permission: "Você não tem permissão para gerenciar este container!",
+  
+  // Mensagens temporárias
+  temp_message_delete_after: "Esta mensagem será excluída em {seconds} segundos."
 };
