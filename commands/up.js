@@ -16,12 +16,22 @@ module.exports = {
   async execute(interaction) {
     const { client } = interaction;
     const userId = interaction.user.id;
+
+    // Função auxiliar para deletar o canal e lidar com erros
+    const deleteChannelSafely = (channel, delay = 5000) => {
+      setTimeout(() => {
+        channel.delete().catch(e => console.error(`[UP Command] Erro ao deletar o canal de setup (${channel.id}):`, e));
+      }, delay);
+    };
     
+    // Adiar a resposta imediatamente para evitar erros de timeout
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     // Verificar se o usuário atingiu o limite de bots
     if (hasReachedContainerLimit(client.db, userId)) {
-      return interaction.reply({
+      return interaction.editReply({
         content: client.getText(userId, 'cmd_up_limit_reached'),
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
     
@@ -31,30 +41,67 @@ module.exports = {
       await guild.channels.create({ name: 'Bot Hosting', type: 4 });
     
     const channel = await guild.channels.create({
-      name: `setup-${interaction.user.username}`,
+      name: `setup-${interaction.user.username}-${Date.now()}`, // para garantir unicidade
       type: 0, // Text Channel
       parent: category.id,
       permissionOverwrites: [
         { id: guild.id, deny: ['ViewChannel'] },
         { id: interaction.user.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'] },
-        { id: interaction.client.user.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'] },
+        { id: client.user.id, allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'] },
       ],
     });
     
-    await interaction.reply({
+    await interaction.editReply({
       content: client.getText(userId, 'cmd_up_setup_channel', { channel: channel.toString() }),
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
     
     await channel.send(client.getText(userId, 'cmd_up_hello', { user: interaction.user.toString() }));
     
-    // Etapa 1: Seleção de Linguagem
+    // --- ORDEM DAS PERGUNTAS ---
+    const messageFilter = m => m.author.id === interaction.user.id;
+
+    // Etapa 1: ID do Bot
+    const botIdMsg = await channel.send(client.getText(userId, 'cmd_up_bot_id'));
+    let botId;
+    let botInfo;
+    
+    try {
+      const botIdCollected = await channel.awaitMessages({ 
+        filter: messageFilter, 
+        max: 1, 
+        time: 120000, 
+        errors: ['time'] 
+      });
+      
+      botId = botIdCollected.first().content.trim(); 
+      
+      try {
+        await botIdCollected.first().delete();
+      } catch (e) {
+        console.error('[UP Command] Não foi possível excluir a mensagem do ID do bot:', e);
+      }
+      
+      try {
+        botInfo = await fetchBotInfo(client, botId);
+        await botIdMsg.edit(`${client.getText(userId, 'cmd_up_bot_found', { botTag: botInfo.tag })}`);
+      } catch (error) {
+        await botIdMsg.edit(`${client.getText(userId, 'cmd_up_bot_not_found')}`);
+        deleteChannelSafely(channel, 10000); 
+        return;
+      }
+    } catch (error) {
+      await channel.send(client.getText(userId, 'timeout')); 
+      deleteChannelSafely(channel);
+      return;
+    }
+
+    // Etapa 2: Seleção de Linguagem
     const languageEmbed = new EmbedBuilder()
       .setTitle(client.getText(userId, 'cmd_up_title'))
       .setDescription(client.getText(userId, 'cmd_up_description'))
       .setColor('#0099ff');
     
-    // Criar opções para o select menu com as linguagens de programação suportadas
     const options = client.config.supportedProgrammingLanguages.map(lang => ({
       label: lang.name,
       description: lang.description,
@@ -80,86 +127,47 @@ module.exports = {
       languageConfig = client.config.supportedProgrammingLanguages.find(l => l.id === language);
       
       await languageResponse.update({ 
-        content: `${client.getText(userId, 'cmd_up_description')}: ${languageConfig.name}`, 
+        content: client.getText(userId, 'cmd_up_language_selected', { languageName: languageConfig.name }), 
         embeds: [], 
         components: [] 
       });
     } catch (error) {
       await channel.send(client.getText(userId, 'timeout'));
-      setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 5000);
+      deleteChannelSafely(channel);
       return;
     }
-    
-    // Etapa 2: Nome do Arquivo Principal
+
+    // Etapa 3: Nome do Arquivo Principal
     const mainFileMsg = await channel.send(
       client.getText(userId, 'cmd_up_main_file', { examples: languageConfig.mainFileExample })
     );
-    
-    const mainFileFilter = m => m.author.id === interaction.user.id;
     let mainFile;
     
     try {
       const mainFileCollected = await channel.awaitMessages({ 
-        filter: mainFileFilter, 
+        filter: messageFilter, 
         max: 1, 
         time: 120000, 
         errors: ['time'] 
       });
       
-      mainFile = mainFileCollected.first().content;
+      mainFile = mainFileCollected.first().content.trim(); 
       
-      // Tentar apagar a mensagem do usuário para limpar o chat
       try {
         await mainFileCollected.first().delete();
       } catch (e) {
-        console.error('Não foi possível excluir a mensagem:', e);
+        console.error('[UP Command] Não foi possível excluir a mensagem do arquivo principal:', e);
       }
       
-      await mainFileMsg.edit(`${client.getText(userId, 'cmd_up_main_file', { examples: languageConfig.mainFileExample })}: \`${mainFile}\``);
+      await mainFileMsg.edit(client.getText(userId, 'cmd_up_main_file_confirm', { fileName: mainFile })); 
     } catch (error) {
       await channel.send(client.getText(userId, 'timeout'));
-      setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 5000);
-      return;
-    }
-    
-    // Etapa 3: ID do Bot
-    const botIdMsg = await channel.send(client.getText(userId, 'cmd_up_bot_id'));
-    let botId;
-    let botInfo;
-    
-    try {
-      const botIdCollected = await channel.awaitMessages({ 
-        filter: mainFileFilter, 
-        max: 1, 
-        time: 120000, 
-        errors: ['time'] 
-      });
-      
-      botId = botIdCollected.first().content;
-      
-      // Tentar apagar a mensagem do usuário para limpar o chat
-      try {
-        await botIdCollected.first().delete();
-      } catch (e) {
-        console.error('Não foi possível excluir a mensagem:', e);
-      }
-      
-      try {
-        botInfo = await fetchBotInfo(client, botId);
-        await botIdMsg.edit(`${client.getText(userId, 'cmd_up_bot_found', { botTag: botInfo.tag })}`);
-      } catch (error) {
-        await botIdMsg.edit(`${client.getText(userId, 'cmd_up_bot_not_found')}`);
-        setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 10000);
-        return;
-      }
-    } catch (error) {
-      await channel.send(client.getText(userId, 'invalid_id'));
-      setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 5000);
+      deleteChannelSafely(channel);
       return;
     }
     
     // Etapa 4: Quantidade de RAM
-    const ramMsg = await channel.send(client.getText(userId, 'cmd_up_ram'));
+    const ramMsg = await channel.send(client.getText(userId, 'cmd_up_ram', { maxRamPerContainer: client.config.maxRamPerContainer })); 
     let ram;
     
     try {
@@ -175,76 +183,92 @@ module.exports = {
       
       ram = parseInt(ramCollected.first().content);
       
-      // Tentar apagar a mensagem do usuário para limpar o chat
       try {
         await ramCollected.first().delete();
       } catch (e) {
-        console.error('Não foi possível excluir a mensagem:', e);
+        console.error('[UP Command] Não foi possível excluir a mensagem da RAM:', e);
       }
       
-      await ramMsg.edit(`${client.getText(userId, 'cmd_up_ram')}: \`${ram}MB\``);
+      await ramMsg.edit(client.getText(userId, 'cmd_up_ram_confirm', { ram: ram })); 
     } catch (error) {
       await channel.send(client.getText(userId, 'invalid_value'));
-      setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 5000);
+      deleteChannelSafely(channel);
       return;
     }
-    
-    // Etapa 5: Arquivo ZIP
+
+    // Etapa 5: Arquivo ZIP (última pergunta interativa)
     const zipMsg = await channel.send(client.getText(userId, 'cmd_up_zip'));
     let zipAttachment;
+    let zipPath; 
     
+    let zipCollectedMessage; // Referência à mensagem do usuário com o anexo ZIP
+
     try {
-      const zipCollected = await channel.awaitMessages({ 
+      zipCollectedMessage = await channel.awaitMessages({ 
         filter: m => m.author.id === interaction.user.id && m.attachments.size > 0, 
         max: 1, 
         time: 300000, 
         errors: ['time'] 
       });
       
-      zipAttachment = zipCollected.first().attachments.first();
+      zipAttachment = zipCollectedMessage.first().attachments.first();
       
       if (!zipAttachment.name.endsWith('.zip')) {
         await channel.send(client.getText(userId, 'invalid_file'));
-        setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 5000);
+        deleteChannelSafely(channel);
         return;
       }
       
-      // Tentar apagar a mensagem do usuário para limpar o chat
-      try {
-        await zipCollected.first().delete();
-      } catch (e) {
-        console.error('Não foi possível excluir a mensagem:', e);
-      }
-      
       await zipMsg.edit(client.getText(userId, 'cmd_up_zip_received'));
+
+      // BAIXAR O ARQUIVO ZIP IMEDIATAMENTE APÓS RECEBÊ-LO
+      await channel.send(client.getText(userId, 'cmd_up_downloading_zip')); 
+      const tempPath = ensureTempDirectory();
+      zipPath = path.join(tempPath, `${userId}_${Date.now()}_${botId}.zip`); // Inclui botId após ele ter sido coletado
+      
+      const downloadUrl = zipAttachment.url;
+      
+      try {
+        const response = await axios.get(downloadUrl, {
+          responseType: 'arraybuffer'
+        });
+        fs.writeFileSync(zipPath, Buffer.from(response.data));
+        await channel.send(client.getText(userId, 'cmd_up_zip_downloaded'));
+        
+        // APAGAR A MENSAGEM DO USUÁRIO SOMENTE APÓS O DOWNLOAD BEM-SUCEDIDO
+        try {
+          await zipCollectedMessage.first().delete();
+        } catch (e) {
+          console.error('[UP Command] Não foi possível excluir a mensagem do arquivo ZIP após download:', e);
+        }
+
+      } catch (axiosError) {
+        console.error(`[UP Command] Erro ao baixar o arquivo ZIP (${downloadUrl}):`, axiosError.message);
+        if (axiosError.response) {
+          console.error(`[UP Command] Status HTTP do erro: ${axiosError.response.status}`);
+        }
+        await channel.send(client.getText(userId, 'cmd_up_download_error', { error: axiosError.message }));
+        deleteChannelSafely(channel, 30000);
+        return;
+      }
+
     } catch (error) {
-      await channel.send(client.getText(userId, 'invalid_file'));
-      setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 5000);
+      await channel.send(client.getText(userId, 'timeout')); 
+      deleteChannelSafely(channel);
       return;
     }
     
-    // Etapa 6: Criar ambiente e container
+    // Etapa 6: Criar ambiente e container (processamento final)
     await channel.send(client.getText(userId, 'cmd_up_creating_env'));
     
     try {
       // Criar diretórios
       const extractPath = ensureContainerDirectory(userId, botId);
-      const tempPath = ensureTempDirectory();
-      const zipPath = path.join(tempPath, `${botId}.zip`);
-      
-      // Baixar o arquivo ZIP
-      const response = await axios({
-        method: 'get',
-        url: zipAttachment.url,
-        responseType: 'arraybuffer'
-      });
-      
-      fs.writeFileSync(zipPath, Buffer.from(response.data));
       
       // Extrair o arquivo ZIP
-      const zip = new AdmZip(zipPath);
+      const zip = new AdmZip(zipPath); 
       zip.extractAllTo(extractPath, true);
-      fs.unlinkSync(zipPath);
+      fs.unlinkSync(zipPath); 
       
       // Dados do bot
       const botData = {
@@ -260,7 +284,6 @@ module.exports = {
       
       // Caso especial para C#
       if (language === 'csharp') {
-        // Tentar encontrar o nome do projeto
         let projectName = 'Bot';
         try {
           const files = fs.readdirSync(extractPath);
@@ -269,7 +292,7 @@ module.exports = {
             projectName = csprojFile.replace('.csproj', '');
           }
         } catch (e) {
-          console.error('Erro ao buscar arquivo .csproj:', e);
+          console.error('[UP Command] Erro ao buscar arquivo .csproj:', e);
         }
         
         dockerfileContent = dockerfileContent.replace('{{PROJECT_NAME}}', projectName);
@@ -281,14 +304,29 @@ module.exports = {
       await channel.send(client.getText(userId, 'cmd_up_creating_container'));
       
       const imageName = `bot-host-${userId}-${botId}`.toLowerCase();
-      await exec(`docker build -t ${imageName} ${extractPath}`);
       
-      const createResult = await exec(
-        `docker create --name ${botData.name} -m ${ram}m --memory-swap ${ram}m --cpu-shares 128 --restart unless-stopped ${imageName}`
-      );
-      
-      const containerId = createResult.stdout.trim();
-      await exec(`docker start ${containerId}`);
+      try {
+        await exec(`docker build -t ${imageName} ${extractPath}`);
+      } catch (buildError) {
+        console.error('[UP Command] Erro ao construir a imagem Docker:', buildError);
+        await channel.send(client.getText(userId, 'cmd_up_docker_build_error', { error: buildError.message }));
+        deleteChannelSafely(channel, 30000);
+        return;
+      }
+
+      let containerId;
+      try {
+        const createResult = await exec(
+          `docker create --name ${botData.name} -m ${ram}m --memory-swap ${ram}m --cpu-shares 128 --restart unless-stopped ${imageName}`
+        );
+        containerId = createResult.stdout.trim();
+        await exec(`docker start ${containerId}`);
+      } catch (containerError) {
+        console.error('[UP Command] Erro ao criar/iniciar o container Docker:', containerError);
+        await channel.send(client.getText(userId, 'cmd_up_docker_container_error', { error: containerError.message }));
+        deleteChannelSafely(channel, 30000);
+        return;
+      }
       
       // Adicionar container ao banco de dados
       const containerData = {
@@ -304,21 +342,19 @@ module.exports = {
       
       addContainer(client.db, userId, containerData);
       
-      // Enviar mensagem de sucesso
+      // Enviar mensagem de sucesso final no canal de setup
       await channel.send(
         client.getText(userId, 'cmd_up_success', { containerId })
       );
       
       // Deletar o canal após 30 segundos
-      setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 30000);
+      deleteChannelSafely(channel, 30000);
     } catch (error) {
-      console.error('Erro ao hospedar o bot:', error);
+      console.error('[UP Command] Erro geral ao hospedar o bot:', error);
       await channel.send(
         client.getText(userId, 'cmd_up_error', { error: error.message })
       );
-      
-      // Deletar o canal após 30 segundos
-      setTimeout(() => channel.delete().catch(e => console.error("Error deleting setup channel:", e)), 30000);
+      deleteChannelSafely(channel, 30000);
     }
   }
 };
